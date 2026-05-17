@@ -1,4 +1,4 @@
-# Azure DevOps Pipeline - Spring Boot with Maven Build
+# Azure DevOps Pipeline - Spring Boot Docker Deployment to Azure Web App
 
 trigger:
   branches:
@@ -10,105 +10,155 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
+
+  # Docker / ACR Configuration
   dockerRegistryServiceConnection: 'acr-service-connection'
-  imageRepository: 'springboot-app'
   containerRegistry: 'mithspringbootacr.azurecr.io'
+  imageRepository: 'springboot-app'
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
-  
-  # Maven settings
+
+  # Azure Web App Configuration
+  azureSubscription: 'azure-service-connection'
+  webAppName: 'springboot-cicd-mith'
+
+  # Maven / Java Configuration
   mavenPOMFile: 'pom.xml'
-  jdkVersion: '21'  # Change to 11 or 21 if needed
+  jdkVersion: '21'
 
 stages:
+
+# =========================================================
+# STAGE 1 - BUILD APPLICATION
+# =========================================================
 - stage: Build
-  displayName: 'Build Application'
+  displayName: 'Build Spring Boot Application'
+
   jobs:
   - job: MavenBuild
-    displayName: 'Maven Build'
+    displayName: 'Maven Build Job'
+
     steps:
-    
-    # Checkout code
+
+    # Checkout source code
     - checkout: self
       displayName: 'Checkout Source Code'
-    
-    # Setup Java
+
+    # Install Java
     - task: JavaToolInstaller@0
       displayName: 'Setup JDK $(jdkVersion)'
+
       inputs:
         versionSpec: '$(jdkVersion)'
         jdkArchitectureOption: 'x64'
         jdkSourceOption: 'PreInstalled'
-    
+
     # Maven Build
     - task: Maven@3
       displayName: 'Maven Clean Package'
+
       inputs:
         mavenPomFile: '$(mavenPOMFile)'
         goals: 'clean package'
-        options: '-DskipTests=false'
-        publishJUnitResults: true
-        testResultsFiles: '**/surefire-reports/TEST-*.xml'
+        options: '-DskipTests'
+        publishJUnitResults: false
         javaHomeOption: 'JDKVersion'
         jdkVersionOption: '$(jdkVersion)'
         mavenVersionOption: 'Default'
-    
-    # Copy JAR for Docker build
-    - task: CopyFiles@2
-      displayName: 'Copy JAR to Staging'
-      inputs:
-        SourceFolder: '$(System.DefaultWorkingDirectory)/target'
-        Contents: '*.jar'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)'
-    
-    # Publish artifact for next stage
-    - task: PublishBuildArtifacts@1
-      displayName: 'Publish Build Artifacts'
-      inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-        ArtifactName: 'drop'
 
+    # Verify JAR generated
+    - script: |
+        echo "Listing target directory"
+        ls -la target
+      displayName: 'Verify JAR File'
+
+
+# =========================================================
+# STAGE 2 - BUILD & PUSH DOCKER IMAGE
+# =========================================================
 - stage: Docker
   displayName: 'Build and Push Docker Image'
+
   dependsOn: Build
+
   jobs:
   - job: DockerBuildPush
-    displayName: 'Docker Build and Push'
+    displayName: 'Docker Build and Push Job'
+
     steps:
-    
-    # Checkout for Dockerfile
+
+    # Checkout source code
     - checkout: self
       displayName: 'Checkout Source Code'
-    
-    # Download artifacts from Build stage
-    - task: DownloadBuildArtifacts@0
-      displayName: 'Download Build Artifacts'
-      inputs:
-        buildType: 'current'
-        downloadType: 'single'
-        artifactName: 'drop'
-        downloadPath: '$(System.DefaultWorkingDirectory)'
-    
-    # Build and Push Docker Image
+
+    # Build and Push Docker Image to ACR
     - task: Docker@2
-      displayName: 'Build and Push to ACR'
+      displayName: 'Build and Push Docker Image'
+
       inputs:
         containerRegistry: '$(dockerRegistryServiceConnection)'
         repository: '$(imageRepository)'
         command: 'buildAndPush'
         Dockerfile: '$(dockerfilePath)'
-        buildContext: '$(System.DefaultWorkingDirectory)'
+        buildContext: '$(Build.SourcesDirectory)'
+
         tags: |
           $(tag)
           latest
-          v1.0.$(Build.BuildId)
-    
-    # Display success message
+
+    # Display image info
     - script: |
         echo "======================================"
-        echo "Docker Image Push Successful!"
+        echo "Docker Image Push Successful"
         echo "======================================"
-        echo "Image: $(containerRegistry)/$(imageRepository):$(tag)"
-        echo "Image: $(containerRegistry)/$(imageRepository):latest"
+        echo "Image:"
+        echo "$(containerRegistry)/$(imageRepository):$(tag)"
+        echo ""
+        echo "Latest:"
+        echo "$(containerRegistry)/$(imageRepository):latest"
         echo "======================================"
-      displayName: 'Success Message'
+
+      displayName: 'Display Docker Image Info'
+
+
+# =========================================================
+# STAGE 3 - DEPLOY TO AZURE WEB APP
+# =========================================================
+- stage: Deploy
+  displayName: 'Deploy to Azure Web App'
+
+  dependsOn: Docker
+
+  jobs:
+  - deployment: DeployWebApp
+    displayName: 'Deploy Container to Azure Web App'
+
+    environment: 'production'
+
+    strategy:
+      runOnce:
+        deploy:
+
+          steps:
+
+          # Deploy Container to Azure Web App
+          - task: AzureWebAppContainer@1
+            displayName: 'Deploy to Azure Web App'
+
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              appName: '$(webAppName)'
+
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)
+
+          # Deployment Success Message
+          - script: |
+              echo "======================================"
+              echo "Deployment Successful"
+              echo "======================================"
+              echo "Web App:"
+              echo "https://$(webAppName).azurewebsites.net"
+              echo "======================================"
+
+            displayName: 'Deployment Success Message'
