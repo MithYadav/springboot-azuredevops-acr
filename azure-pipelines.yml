@@ -20,7 +20,7 @@ variables:
 
   # Azure Web App Configuration
   azureSubscription: 'azure-service-connection'
-  webAppName: 'springboot-cicd-mith'
+  webAppName: 'springboot-app-yadav'
 
   # Maven / Java Configuration
   mavenPOMFile: 'pom.xml'
